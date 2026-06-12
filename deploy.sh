@@ -19,6 +19,20 @@ SERVICE_NAME="eld-trip-be"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+install_systemd_service() {
+  local app_dir="$1"
+  local unit_src="${app_dir}/deploy/${SERVICE_NAME}.service"
+  local unit_dst="/etc/systemd/system/${SERVICE_NAME}.service"
+
+  if [[ ! -f "$unit_src" ]]; then
+    return 1
+  fi
+
+  sed "s|__APP_DIR__|${app_dir}|g" "$unit_src" > "$unit_dst"
+  systemctl daemon-reload
+  systemctl enable "${SERVICE_NAME}"
+}
+
 deploy_on_server() {
   local app_dir="$1"
   cd "$app_dir"
@@ -39,12 +53,19 @@ deploy_on_server() {
     python manage.py collectstatic --noinput 2>/dev/null || true
   fi
 
-  if systemctl is-active --quiet "${SERVICE_NAME}"; then
+  if ! systemctl cat "${SERVICE_NAME}" &>/dev/null; then
+    if install_systemd_service "$app_dir"; then
+      echo "==> Installed systemd service ${SERVICE_NAME}"
+    fi
+  fi
+
+  if systemctl cat "${SERVICE_NAME}" &>/dev/null; then
     systemctl restart "${SERVICE_NAME}"
-  elif systemctl list-unit-files "${SERVICE_NAME}.service" &>/dev/null; then
-    systemctl start "${SERVICE_NAME}"
+    echo "==> Service status:"
+    systemctl status "${SERVICE_NAME}" --no-pager -l || true
   else
-    echo "Warning: systemd service '${SERVICE_NAME}' not found. Start gunicorn manually."
+    echo "Warning: systemd service '${SERVICE_NAME}' not found. Start gunicorn manually:"
+    echo "  ${app_dir}/venv/bin/gunicorn --bind 0.0.0.0:8000 config.wsgi:application"
   fi
 
   echo "==> Deploy complete"
