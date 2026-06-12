@@ -16,8 +16,25 @@ DEPLOY_USER="root"
 DEPLOY_PATH="/opt/eld-trip-be"
 SSH_KEY=""                              # leave empty to use your default SSH key
 SERVICE_NAME="eld-trip-be"
+GUNICORN_PORT=8000
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+stop_conflicting_processes() {
+  local port="$1"
+  echo "==> Freeing port ${port}"
+
+  systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+  sleep 1
+
+  if command -v fuser &>/dev/null; then
+    fuser -k "${port}/tcp" 2>/dev/null || true
+  elif command -v lsof &>/dev/null; then
+    lsof -ti ":${port}" | xargs -r kill -9 2>/dev/null || true
+  fi
+
+  sleep 1
+}
 
 install_systemd_service() {
   local app_dir="$1"
@@ -53,14 +70,14 @@ deploy_on_server() {
     python manage.py collectstatic --noinput 2>/dev/null || true
   fi
 
-  if ! systemctl cat "${SERVICE_NAME}" &>/dev/null; then
-    if install_systemd_service "$app_dir"; then
-      echo "==> Installed systemd service ${SERVICE_NAME}"
-    fi
+  if install_systemd_service "$app_dir"; then
+    echo "==> Systemd service ${SERVICE_NAME} installed/updated"
   fi
 
   if systemctl cat "${SERVICE_NAME}" &>/dev/null; then
-    systemctl restart "${SERVICE_NAME}"
+    stop_conflicting_processes "${GUNICORN_PORT}"
+    systemctl start "${SERVICE_NAME}"
+    sleep 2
     echo "==> Service status:"
     systemctl status "${SERVICE_NAME}" --no-pager -l || true
   else
