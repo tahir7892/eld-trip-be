@@ -1,26 +1,62 @@
 #!/usr/bin/env bash
 #
-# Deploy the Django backend to a DigitalOcean droplet.
+# Deploy the Django backend.
 #
-# Edit the variables below, then run: ./deploy.sh
+# On the server (after git pull):
+#   cd /opt/eld-trip-be && ./deploy.sh
+#
+# From your Mac (push code via rsync):
+#   Set DEPLOY_HOST below, then ./deploy.sh
 #
 set -euo pipefail
 
-# --- Server config (edit these) ---
-DEPLOY_HOST=""                          # e.g. 164.92.x.x or api.yourdomain.com
+# --- Remote deploy config (only needed when running from your Mac) ---
+DEPLOY_HOST=""                          # droplet IP or SSH host alias
 DEPLOY_USER="root"
-DEPLOY_PATH="/var/www/eld-trip-be"
+DEPLOY_PATH="/opt/eld-trip-be"
 SSH_KEY=""                              # leave empty to use your default SSH key
 SERVICE_NAME="eld-trip-be"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
 
-if [[ -z "$DEPLOY_HOST" ]]; then
-  echo "Error: Set DEPLOY_HOST at the top of deploy.sh before running."
-  exit 1
+deploy_on_server() {
+  local app_dir="$1"
+  cd "$app_dir"
+
+  echo "==> Deploying in ${app_dir}"
+
+  if [[ ! -d venv ]]; then
+    python3 -m venv venv
+  fi
+
+  source venv/bin/activate
+  pip install --upgrade pip
+  pip install -r requirements.txt gunicorn
+
+  python manage.py migrate --noinput
+
+  if python manage.py help collectstatic &>/dev/null; then
+    python manage.py collectstatic --noinput 2>/dev/null || true
+  fi
+
+  if systemctl is-active --quiet "${SERVICE_NAME}"; then
+    systemctl restart "${SERVICE_NAME}"
+  elif systemctl list-unit-files "${SERVICE_NAME}.service" &>/dev/null; then
+    systemctl start "${SERVICE_NAME}"
+  else
+    echo "Warning: systemd service '${SERVICE_NAME}' not found. Start gunicorn manually."
+  fi
+
+  echo "==> Deploy complete"
+}
+
+# On-server: git pull already updated the code; just install, migrate, restart.
+if [[ -z "$DEPLOY_HOST" || "${1:-}" == "--local" ]]; then
+  deploy_on_server "$SCRIPT_DIR"
+  exit 0
 fi
 
+# From Mac: rsync code to the droplet, then run server steps over SSH.
 SSH_ARGS=()
 RSYNC_SSH="ssh"
 if [[ -n "$SSH_KEY" ]]; then
@@ -41,34 +77,9 @@ REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
 
 echo "==> Syncing code to ${REMOTE}:${DEPLOY_PATH}"
 rsync -avz --delete -e "$RSYNC_SSH" "${RSYNC_EXCLUDES[@]}" \
-  ./ "${REMOTE}:${DEPLOY_PATH}/"
+  "$SCRIPT_DIR/" "${REMOTE}:${DEPLOY_PATH}/"
 
-echo "==> Installing dependencies and applying migrations"
-ssh "${SSH_ARGS[@]}" "$REMOTE" bash -s <<EOF
-set -euo pipefail
-cd "${DEPLOY_PATH}"
+echo "==> Running deploy on server"
+ssh "${SSH_ARGS[@]}" "$REMOTE" "cd ${DEPLOY_PATH} && ./deploy.sh --local"
 
-if [[ ! -d venv ]]; then
-  python3 -m venv venv
-fi
-
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt gunicorn
-
-python manage.py migrate --noinput
-
-if python manage.py help collectstatic &>/dev/null; then
-  python manage.py collectstatic --noinput 2>/dev/null || true
-fi
-
-if systemctl is-active --quiet "${SERVICE_NAME}"; then
-  sudo systemctl restart "${SERVICE_NAME}"
-elif systemctl list-unit-files "${SERVICE_NAME}.service" &>/dev/null; then
-  sudo systemctl start "${SERVICE_NAME}"
-else
-  echo "Warning: systemd service '${SERVICE_NAME}' not found. Start gunicorn manually."
-fi
-EOF
-
-echo "==> Deploy complete: ${REMOTE}:${DEPLOY_PATH}"
+echo "==> Remote deploy complete: ${REMOTE}:${DEPLOY_PATH}"
