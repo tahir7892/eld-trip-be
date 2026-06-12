@@ -66,9 +66,8 @@ deploy_on_server() {
 
   python manage.py migrate --noinput
 
-  if python manage.py help collectstatic &>/dev/null; then
-    python manage.py collectstatic --noinput 2>/dev/null || true
-  fi
+  echo "==> Collecting static files"
+  python manage.py collectstatic --noinput
 
   if install_systemd_service "$app_dir"; then
     echo "==> Systemd service ${SERVICE_NAME} installed/updated"
